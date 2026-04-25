@@ -9,7 +9,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "predeploy": "npm run build",
-    "deploy": "touch dist/.nojekyll && gh-pages -d dist -t true"
+    "deploy": "touch dist/.nojekyll && gh-pages -d dist -t"
   },
   "dependencies": {
     "firebase": "^12.12.1",
