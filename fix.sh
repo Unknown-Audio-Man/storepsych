@@ -1,23 +1,26 @@
 #!/bin/bash
 
-echo "🛠️  Fixing Tailwind CSS configuration..."
+echo "🛠️  Fixing Tailwind CSS configuration for v4..."
 
 # 1. Install dependencies
-echo "📦 Installing Tailwind, PostCSS, and Autoprefixer..."
-npm install -D tailwindcss postcss autoprefixer
+# Tailwind v4 requires @tailwindcss/postcss as a separate package for PostCSS integration
+echo "📦 Installing @tailwindcss/postcss, tailwindcss, and autoprefixer..."
+npm install -D tailwindcss @tailwindcss/postcss autoprefixer
 
 # 2. Write postcss.config.js
+# Updated to use @tailwindcss/postcss instead of tailwindcss
 echo "⚙️  Writing postcss.config.js..."
 cat <<EOF > postcss.config.js
 export default {
   plugins: {
-    tailwindcss: {},
-    autoprefixer: {},
+    '@tailwindcss/postcss': {},
+    'autoprefixer': {},
   },
 }
 EOF
 
 # 3. Write tailwind.config.js
+# Tailwind v4 often doesn't need this file for basic setups, but keeping it for content detection safety
 echo "⚙️  Writing tailwind.config.js..."
 cat <<EOF > tailwind.config.js
 /** @type {import('tailwindcss').Config} */
@@ -34,11 +37,10 @@ export default {
 EOF
 
 # 4. Overwrite src/index.css
-echo "🎨 Overwriting src/index.css with Tailwind directives..."
+# Tailwind v4 uses the modern @import syntax
+echo "🎨 Overwriting src/index.css with v4 import..."
 cat <<EOF > src/index.css
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 EOF
 
 # 5. Delete conflicting Vite CSS
@@ -68,7 +70,7 @@ rm -f src/App.jsx.bak
 # 8. Commit and Deploy
 echo "🚀 Committing fixes and deploying to GitHub Pages..."
 git add .
-git commit -m "Fix Tailwind styling configuration"
+git commit -m "Fix Tailwind v4 PostCSS configuration"
 git push origin main
 
 # Run the deploy script you added to package.json
