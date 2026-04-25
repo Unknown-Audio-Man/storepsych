@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Calendar, Clock, User, Mail, Search, ChevronRight, 
   MapPin, Phone, CheckCircle, AlertCircle, Loader2,
   CalendarCheck, Shield, Filter, LogOut, Check, X, ShieldCheck,
-  ArrowRight, Heart, Sparkles, Coffee, MessageCircle, Info
+  ArrowRight, Heart, Sparkles, Coffee, MessageCircle, Info, Send, Bot
 } from 'lucide-react';
 
 // Firebase Imports
@@ -12,29 +12,45 @@ import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken }
 import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc } from 'firebase/firestore';
 
 // ============================================================================
-// FIREBASE CONFIGURATION & INITIALIZATION
+// FIREBASE & API CONFIGURATION
 // ============================================================================
 const getFirebaseConfig = () => {
-  // Priority 1: Environment-provided config (for certain preview environments)
+  // Priority 1: Environment-provided config (for Canvas/Preview environments)
   if (typeof __firebase_config !== 'undefined' && __firebase_config) {
     return JSON.parse(__firebase_config);
   }
   
-  // Priority 2: Fallback for local development or manual entry
-  // Note: Placeholders are used here to prevent compiler issues in restricted environments.
+  // Priority 2: Vite Environment Variables (REQUIRED FOR LOCAL BUILD & GITHUB DEPLOYMENT)
+  // We access them via a safer check to avoid compiler crashes in older environments
+  const env = (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env : {};
+
   return {
-    apiKey: "",
-    authDomain: "",
-    projectId: "",
-    storageBucket: "",
-    messagingSenderId: "",
-    appId: ""
+    apiKey: env.VITE_FIREBASE_API_KEY || "",
+    authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || "",
+    projectId: env.VITE_FIREBASE_PROJECT_ID || "",
+    storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || "",
+    messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || "",
+    appId: env.VITE_FIREBASE_APP_ID || ""
   };
 };
 
 const firebaseConfig = getFirebaseConfig();
 
-// Only initialize if we have at least an API Key to prevent early crashes
+// Gemini API Key for the AI Assistant
+const getGeminiKey = () => {
+  const env = (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env : {};
+  return env.VITE_GEMINI_API_KEY || "";
+};
+const GEMINI_API_KEY = getGeminiKey();
+
+// Admin Code for hidden login
+const getAdminCode = () => {
+  const env = (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env : {};
+  return env.VITE_ADMIN_CODE || 'CLINICAL2026';
+};
+const ADMIN_CODE = getAdminCode();
+
+// Initialize Firebase services
 let app, auth, db;
 try {
   if (firebaseConfig.apiKey) {
@@ -43,11 +59,60 @@ try {
     db = getFirestore(app);
   }
 } catch (e) {
-  console.error("Firebase init failed:", e);
+  console.error("Firebase initialization failed:", e);
 }
 
 const APP_ID = typeof __app_id !== 'undefined' ? __app_id : 'lakshmi-clinical-portal';
-const ADMIN_CODE = 'CLINICAL2026';
+
+// ============================================================================
+// AI ASSISTANT LOGIC (GEMINI API)
+// ============================================================================
+const callGeminiAPI = async (userQuery, history) => {
+  if (!GEMINI_API_KEY) {
+    throw new Error("AI Configuration Missing");
+  }
+
+  const systemPrompt = `You are the Clinical AI Assistant for Lakshmi Mupparthi, a Registered Psychotherapist (Qualifying).
+  Your goal is to help potential clients with inquiries and guide them through the booking process.
+  
+  CONTEXT:
+  - Lakshmi's modalities: CBT (Cognitive Behavioural), DBT (Dialectical Behavioural), and EFT (Emotion-Focused).
+  - Focus areas: Relational Trauma, Anxiety, Mood disorders, and Professional Burnout.
+  - Locations: Serving clients across Ontario (Virtual & In-person options in Toronto, Ottawa, and St. Catharines).
+  - Process: Clients request a consultation on the website, receive a Reference ID (Format: LM-XXXXXX), and then Lakshmi contacts them.
+  
+  TONE: Professional, empathetic, grounded, and concise. 
+  IMPORTANT: You are an assistant, not a therapist. Do not provide medical diagnosis or crisis intervention. If a user is in crisis, tell them to call emergency services or go to the nearest hospital.
+  Keep responses under 3 sentences where possible.`;
+
+  const fetchWithRetry = async (retries = 5, delay = 1000) => {
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${GEMINI_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [
+            ...history,
+            { role: "user", parts: [{ text: userQuery }] }
+          ],
+          systemInstruction: { parts: [{ text: systemPrompt }] }
+        })
+      });
+      
+      if (!response.ok) throw new Error('API Error');
+      const result = await response.json();
+      return result.candidates?.[0]?.content?.parts?.[0]?.text;
+    } catch (err) {
+      if (retries > 0) {
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return fetchWithRetry(retries - 1, delay * 2);
+      }
+      throw err;
+    }
+  };
+
+  return await fetchWithRetry();
+};
 
 // ============================================================================
 // HELPER COMPONENTS
@@ -56,7 +121,7 @@ const Toast = ({ message, type, onClose }) => {
   if (!message) return null;
   const isError = type === 'error';
   return (
-    <div className={`fixed top-6 right-6 z-50 flex items-center p-4 rounded-2xl shadow-xl border ${isError ? 'bg-red-50 border-red-100 text-red-800' : 'bg-teal-50 border-teal-100 text-teal-900'} animate-slide-in-right backdrop-blur-md`}>
+    <div className={`fixed top-6 right-6 z-[100] flex items-center p-4 rounded-2xl shadow-xl border ${isError ? 'bg-red-50 border-red-100 text-red-800' : 'bg-teal-50 border-teal-100 text-teal-900'} animate-slide-in-right backdrop-blur-md`}>
       {isError ? <AlertCircle className="w-5 h-5 mr-3 flex-shrink-0" /> : <CheckCircle className="w-5 h-5 mr-3 flex-shrink-0" />}
       <span className="font-medium text-sm pr-2">{message}</span>
       <button onClick={onClose} className="ml-auto opacity-60 hover:opacity-100 p-1">
@@ -76,6 +141,7 @@ export default function App() {
   const [dbError, setDbError] = useState(null);
   const [toast, setToast] = useState({ message: '', type: '' });
   
+  // Data State
   const [bookings, setBookings] = useState([]);
   const [selectedDate, setSelectedDate] = useState(null);
   const [selectedTime, setSelectedTime] = useState(null);
@@ -83,15 +149,26 @@ export default function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [bookingSuccess, setBookingSuccess] = useState(null);
 
+  // Tracking State
   const [trackEmail, setTrackEmail] = useState('');
   const [trackRef, setTrackRef] = useState('');
   const [trackResult, setTrackResult] = useState(null);
   const [isTrackLoading, setIsTrackLoading] = useState(false);
   
+  // UI State
   const [footerClickCount, setFooterClickCount] = useState(0);
   const [showAdminLogin, setShowAdminLogin] = useState(false);
   const [adminPasswordInput, setAdminPasswordInput] = useState('');
   const [scrolled, setScrolled] = useState(false);
+
+  // AI Assistant State
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState([
+    { role: "model", parts: [{ text: "Hello. I'm Lakshmi's clinical assistant. How can I help you with inquiries or booking today?" }] }
+  ]);
+  const [chatInput, setChatInput] = useState("");
+  const [isTyping, setIsTyping] = useState(false);
+  const chatEndRef = useRef(null);
 
   useEffect(() => {
     const handleScroll = () => setScrolled(window.scrollY > 50);
@@ -100,7 +177,14 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!auth) return;
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages]);
+
+  useEffect(() => {
+    if (!auth) {
+      setDbError("Firebase configuration missing. Ensure you have a .env file with VITE_ prefixes.");
+      return;
+    }
     let isMounted = true;
     const initAuth = async () => {
       try {
@@ -168,7 +252,7 @@ export default function App() {
       return;
     }
     if (!user || !db) {
-      showToast("Clinical systems are currently offline. Please try again later.", "error");
+      showToast("Clinical systems are currently offline. Please check your credentials.", "error");
       return;
     }
 
@@ -194,6 +278,7 @@ export default function App() {
       setSelectedDate(null);
       showToast("Consultation request submitted.");
     } catch (err) {
+      console.error(err);
       showToast("Failed to process request.", "error");
     } finally {
       setIsSubmitting(false);
@@ -230,6 +315,25 @@ export default function App() {
       showToast("Invalid code", "error");
     }
     setAdminPasswordInput('');
+  };
+
+  const handleSendMessage = async (e) => {
+    e.preventDefault();
+    if (!chatInput.trim() || isTyping) return;
+
+    const userMsg = chatInput;
+    setChatInput("");
+    setChatMessages(prev => [...prev, { role: "user", parts: [{ text: userMsg }] }]);
+    setIsTyping(true);
+
+    try {
+      const responseText = await callGeminiAPI(userMsg, chatMessages);
+      setChatMessages(prev => [...prev, { role: "model", parts: [{ text: responseText }] }]);
+    } catch (err) {
+      setChatMessages(prev => [...prev, { role: "model", parts: [{ text: "Assistant connection is limited. Please use the booking form for immediate inquiries." }] }]);
+    } finally {
+      setIsTyping(false);
+    }
   };
 
   // --------------------------------------------------------------------------
@@ -297,9 +401,89 @@ export default function App() {
     );
   }
 
+  // Configuration check for public view
+  if (dbError && currentView !== 'admin') {
+    return (
+      <div className="min-h-screen bg-stone-50 flex items-center justify-center p-10 text-center">
+        <div className="max-w-md space-y-6 bg-white p-10 rounded-[3rem] shadow-xl border border-stone-100">
+           <AlertCircle className="w-12 h-12 text-red-400 mx-auto" />
+           <h2 className="text-2xl font-serif text-stone-900">System Configuration Needed</h2>
+           <p className="text-stone-500 text-sm leading-relaxed">{dbError}</p>
+           <p className="text-xs text-stone-400">Ensure your GitHub Secrets are set and mapped correctly. Local builds require a .env file.</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#FDFCFB] font-sans text-stone-800 flex flex-col selection:bg-teal-100 selection:text-teal-900">
       <Toast message={toast.message} type={toast.type} onClose={() => setToast({ message: '', type: '' })} />
+
+      {/* AI Assistant FAB */}
+      <div className="fixed bottom-6 right-6 z-50">
+        {!chatOpen ? (
+          <button 
+            onClick={() => setChatOpen(true)}
+            className="bg-teal-800 text-white p-4 rounded-full shadow-2xl hover:bg-teal-900 transition-all hover:scale-110 group relative"
+          >
+            <MessageCircle className="w-6 h-6" />
+            <span className="absolute right-full mr-3 top-1/2 -translate-y-1/2 bg-white text-stone-800 px-3 py-1 rounded-lg text-xs font-bold shadow-md whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity border border-stone-100">Ask a Question</span>
+          </button>
+        ) : (
+          <div className="bg-white w-[350px] h-[520px] rounded-[2.5rem] shadow-2xl flex flex-col border border-stone-100 overflow-hidden animate-slide-up">
+            <div className="bg-teal-800 p-6 text-white flex justify-between items-center">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-teal-700/50 rounded-xl flex items-center justify-center">
+                  <Bot className="w-6 h-6" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold tracking-wider uppercase">Clinical Assistant</h4>
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></span>
+                    <span className="text-[10px] font-bold opacity-70">Always Online</span>
+                  </div>
+                </div>
+              </div>
+              <button onClick={() => setChatOpen(false)} className="opacity-70 hover:opacity-100 transition-opacity"><X className="w-5 h-5" /></button>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar bg-stone-50/20">
+              {chatMessages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[85%] p-4 rounded-2xl text-[13px] leading-relaxed ${msg.role === 'user' ? 'bg-teal-800 text-white rounded-br-none shadow-md' : 'bg-white text-stone-700 border border-stone-100 rounded-bl-none shadow-sm'}`}>
+                    {msg.parts[0].text}
+                  </div>
+                </div>
+              ))}
+              {isTyping && (
+                <div className="flex justify-start">
+                  <div className="bg-white border border-stone-100 p-3 rounded-2xl rounded-bl-none flex gap-1">
+                    <span className="w-1 h-1 bg-stone-300 rounded-full animate-bounce"></span>
+                    <span className="w-1 h-1 bg-stone-300 rounded-full animate-bounce [animation-delay:0.2s]"></span>
+                    <span className="w-1 h-1 bg-stone-300 rounded-full animate-bounce [animation-delay:0.4s]"></span>
+                  </div>
+                </div>
+              )}
+              <div ref={chatEndRef} />
+            </div>
+
+            <form onSubmit={handleSendMessage} className="p-4 border-t border-stone-100 bg-white">
+              <div className="relative">
+                <input 
+                  type="text" 
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  placeholder="How does therapy work?"
+                  className="w-full pl-4 pr-12 py-3 bg-stone-50 border border-stone-200 rounded-2xl text-sm focus:bg-white focus:ring-2 focus:ring-teal-500/20 outline-none transition-all"
+                />
+                <button type="submit" disabled={!chatInput.trim() || isTyping} className="absolute right-2 top-2 p-1.5 bg-teal-800 text-white rounded-xl hover:bg-teal-900 disabled:opacity-30 shadow-sm transition-all">
+                  <Send className="w-4 h-4" />
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+      </div>
 
       {/* Navigation */}
       <nav className={`fixed w-full top-0 z-50 transition-all duration-500 ${scrolled ? 'bg-white/90 backdrop-blur-lg shadow-sm py-4' : 'bg-transparent py-6'}`}>
@@ -325,7 +509,7 @@ export default function App() {
           <div className="lg:w-3/5 space-y-10 animate-fade-in-up">
             <div className="inline-flex items-center gap-3 py-2 px-5 rounded-full bg-white border border-stone-200 text-teal-800 text-[10px] font-bold tracking-[0.2em] uppercase shadow-sm">
               <Sparkles className="w-3 h-3 text-teal-500" />
-              Compassionate Clinical Care
+              Lakshmi Mupparthi Psychotherapy
             </div>
             <h2 className="text-5xl lg:text-7xl font-serif text-stone-900 leading-[1.05] tracking-tight">
               Healing is a <span className="text-teal-800 italic">Collaborative</span> <br />
@@ -333,7 +517,7 @@ export default function App() {
               Authenticity.
             </h2>
             <p className="text-xl text-stone-500 leading-relaxed max-w-2xl font-light">
-              Therapy is more than problem-solving; it is an exploration of the patterns that shape your life. Utilizing evidence-based modalities like CBT, DBT, and EFT, I help you navigate trauma, anxiety, and relationship distress with clinical precision and deep empathy.
+              Therapy is more than problem-solving; it is an exploration of the patterns that shape your life. I provide empathetic, evidence-based care tailored to your unique journey toward resilience and clarity.
             </p>
             <div className="flex flex-col sm:flex-row gap-5 pt-4">
               <a href="#booking" className="bg-teal-800 text-white px-10 py-5 rounded-full font-bold uppercase tracking-widest text-[11px] hover:bg-teal-900 transition-all shadow-xl shadow-teal-900/20 flex items-center justify-center">
@@ -357,17 +541,17 @@ export default function App() {
         </div>
       </section>
 
-      {/* Therapy Style / Welcome Section */}
+      {/* Philosophy Section */}
       <section id="about" className="py-32 bg-white">
         <div className="max-w-5xl mx-auto px-6 text-center space-y-12">
           <div className="space-y-4 max-w-3xl mx-auto">
             <h3 className="text-sm font-bold uppercase tracking-[0.3em] text-teal-700 mb-6">Philosophy & Practice</h3>
             <h4 className="text-4xl font-serif font-medium text-stone-900 leading-snug">
-              "My practice is grounded in the belief that everyone possesses the inherent capacity for growth."
+              "Every person possesses the inherent capacity for growth and lasting transformation."
             </h4>
           </div>
           <p className="text-lg text-stone-600 leading-relaxed font-light text-left md:text-center">
-            As a Registered Psychotherapist (Qualifying) at the <strong>Centre for Interpersonal Relationships (CFIR)</strong>, I work with individuals facing the complexities of trauma, anxiety, and identity. My approach is integrative, meaning I draw from various clinical toolkits to meet your specific needs. Whether we are reframing thought cycles with <strong>CBT</strong>, building emotional regulation skills via <strong>DBT</strong>, or deepening emotional connection through <strong>EFT</strong>, your safety and autonomy remain my highest priority.
+            As a Registered Psychotherapist (Qualifying) in independent practice, I work with individuals facing the complexities of trauma, anxiety, and identity. My approach is integrative, drawing from various clinical toolkits—including <strong>CBT</strong>, <strong>DBT</strong>, and <strong>EFT</strong>—to meet your specific needs. I am dedicated to providing a safe, autonomous space for self-exploration and profound change.
           </p>
           <div className="grid md:grid-cols-3 gap-12 pt-12">
             <div className="space-y-4">
@@ -388,8 +572,8 @@ export default function App() {
               <div className="w-14 h-14 bg-stone-50 rounded-2xl flex items-center justify-center mx-auto text-teal-700 border border-stone-100">
                 <MessageCircle className="w-6 h-6" />
               </div>
-              <h5 className="font-bold text-stone-900 uppercase tracking-widest text-xs">Collaborative</h5>
-              <p className="text-sm text-stone-500 font-light">We work as a team, setting goals that reflect your true aspirations.</p>
+              <h5 className="font-bold text-stone-900 uppercase tracking-widest text-xs">Personalized</h5>
+              <p className="text-sm text-stone-500 font-light">Tailored support that respects your unique identity and aspirations.</p>
             </div>
           </div>
         </div>
@@ -403,7 +587,7 @@ export default function App() {
               <h3 className="text-sm font-bold uppercase tracking-[0.3em] text-teal-700">Areas of Focus</h3>
               <h4 className="text-5xl font-serif text-stone-900">Clinical <br />Specializations</h4>
               <p className="text-stone-500 font-light leading-relaxed">
-                I help adult individuals navigate various challenges, with a primary focus on trauma recovery and professional well-being.
+                I specialize in working with adults across Ontario, providing virtual and in-person support that bridges the gap between clinical expertise and heartfelt care.
               </p>
               <div className="space-y-4 pt-6">
                 {['Cognitive Behavioural (CBT)', 'Dialectical Behavioural (DBT)', 'Emotion-Focused (EFT)', 'Trauma-Informed Care'].map(mod => (
@@ -416,23 +600,23 @@ export default function App() {
             
             <div className="lg:w-2/3 grid sm:grid-cols-2 gap-8">
               <div className="bg-white p-10 rounded-[2.5rem] shadow-sm border border-stone-100 hover:shadow-md transition-shadow">
-                <h5 className="text-2xl font-serif text-stone-900 mb-4">Relational Trauma</h5>
-                <p className="text-stone-500 text-sm font-light leading-relaxed mb-6">Processing past interpersonal harm to rebuild trust in yourself and your current relationships.</p>
+                <h5 className="text-2xl font-serif text-stone-900 mb-4 text-stone-900">Relational Trauma</h5>
+                <p className="text-stone-500 text-sm font-light leading-relaxed mb-6">Processing interpersonal harm to rebuild trust in yourself and your current relationships.</p>
                 <div className="h-1 w-10 bg-teal-100 rounded-full"></div>
               </div>
               <div className="bg-white p-10 rounded-[2.5rem] shadow-sm border border-stone-100 hover:shadow-md transition-shadow">
-                <h5 className="text-2xl font-serif text-stone-900 mb-4">Anxiety & Mood</h5>
-                <p className="text-stone-500 text-sm font-light leading-relaxed mb-6">Moving beyond chronic worry and fatigue to find a sense of groundedness and emotional balance.</p>
+                <h5 className="text-2xl font-serif text-stone-900 mb-4 text-stone-900">Anxiety & Mood</h5>
+                <p className="text-stone-500 text-sm font-light leading-relaxed mb-6">Moving beyond chronic worry to find a sense of groundedness and emotional balance.</p>
                 <div className="h-1 w-10 bg-teal-100 rounded-full"></div>
               </div>
               <div className="bg-white p-10 rounded-[2.5rem] shadow-sm border border-stone-100 hover:shadow-md transition-shadow">
-                <h5 className="text-2xl font-serif text-stone-900 mb-4">Professional Burnout</h5>
-                <p className="text-stone-500 text-sm font-light leading-relaxed mb-6">Addressing high-stress workplace dynamics and restoring your professional and personal boundaries.</p>
+                <h5 className="text-2xl font-serif text-stone-900 mb-4 text-stone-900">Professional Burnout</h5>
+                <p className="text-stone-500 text-sm font-light leading-relaxed mb-6">Addressing workplace stress and restoring your professional boundaries and personal joy.</p>
                 <div className="h-1 w-10 bg-teal-100 rounded-full"></div>
               </div>
               <div className="bg-teal-900 p-10 rounded-[2.5rem] shadow-xl text-white">
                 <h5 className="text-2xl font-serif mb-4 text-white">Life Transitions</h5>
-                <p className="text-teal-100/70 text-sm font-light leading-relaxed mb-6">Navigating major life shifts (career, identity, relocation) with clarity and psychological support.</p>
+                <p className="text-teal-100/70 text-sm font-light leading-relaxed mb-6">Navigating major shifts in career, identity, or location with psychological clarity and support.</p>
                 <div className="h-1 w-10 bg-teal-500/30 rounded-full"></div>
               </div>
             </div>
@@ -445,14 +629,15 @@ export default function App() {
         <div className="max-w-6xl mx-auto px-6">
           <div className="text-center mb-16 space-y-4">
             <h3 className="text-sm font-bold uppercase tracking-[0.3em] text-teal-700">Inquiry & Intake</h3>
-            <h4 className="text-5xl font-serif text-stone-900">Request a Session</h4>
+            <h4 className="text-5xl font-serif text-stone-900">Request a Consultation</h4>
+            <p className="text-stone-400 text-sm font-medium italic">Virtual & In-person options available</p>
           </div>
 
           {bookingSuccess ? (
             <div className="bg-teal-50 border border-teal-100 p-16 rounded-[3rem] shadow-2xl max-w-2xl mx-auto text-center animate-fade-in-up">
               <CheckCircle className="w-16 h-16 text-teal-600 mx-auto mb-8" />
               <h4 className="text-3xl font-serif text-stone-900 mb-4">Request Received</h4>
-              <p className="text-stone-500 mb-10 font-light">Thank you, {bookingSuccess.name}. Lakshmi will review your request and contact you shortly.</p>
+              <p className="text-stone-500 mb-10 font-light">Thank you, {bookingSuccess.name}. I will review your request and contact you directly to schedule your intake session.</p>
               <div className="bg-white p-8 rounded-2xl border border-teal-200 inline-block">
                 <p className="text-[10px] text-teal-600 uppercase font-bold tracking-widest mb-2">Reference ID</p>
                 <p className="text-4xl font-mono font-bold text-stone-900">{bookingSuccess.refId}</p>
@@ -481,7 +666,7 @@ export default function App() {
                 {selectedDate ? (
                   <form onSubmit={handleBookAppointment} className="space-y-8 animate-fade-in">
                     <div>
-                      <h5 className="font-bold text-stone-900 mb-6 uppercase tracking-widest text-xs flex items-center"><Clock className="w-4 h-4 mr-3" /> Select Time</h5>
+                      <h5 className="font-bold text-stone-900 mb-6 uppercase tracking-widest text-xs flex items-center"><Clock className="w-4 h-4 mr-3" /> Available Times</h5>
                       <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
                         {timeSlots.map(time => {
                           const isBooked = bookings.some(b => b.date === selectedDate.toISOString().split('T')[0] && b.time === time && b.status !== 'Cancelled');
@@ -495,10 +680,10 @@ export default function App() {
                     </div>
                     <div className="space-y-6 pt-6 border-t border-stone-50">
                       <div className="grid sm:grid-cols-2 gap-6">
-                        <input type="text" required placeholder="Full Name" value={bookingForm.name} onChange={e => setBookingForm({...bookingForm, name: e.target.value})} className="w-full px-5 py-4 bg-stone-50 border border-stone-200 rounded-2xl outline-none focus:bg-white focus:ring-2 focus:ring-teal-500/20" />
-                        <input type="email" required placeholder="Email Address" value={bookingForm.email} onChange={e => setBookingForm({...bookingForm, email: e.target.value})} className="w-full px-5 py-4 bg-stone-50 border border-stone-200 rounded-2xl outline-none focus:bg-white focus:ring-2 focus:ring-teal-500/20" />
+                        <input type="text" required placeholder="Full Name" value={bookingForm.name} onChange={e => setBookingForm({...bookingForm, name: e.target.value})} className="w-full px-5 py-4 bg-stone-50 border border-stone-200 rounded-2xl outline-none focus:bg-white focus:ring-2 focus:ring-teal-500/20 text-stone-900" />
+                        <input type="email" required placeholder="Email Address" value={bookingForm.email} onChange={e => setBookingForm({...bookingForm, email: e.target.value})} className="w-full px-5 py-4 bg-stone-50 border border-stone-200 rounded-2xl outline-none focus:bg-white focus:ring-2 focus:ring-teal-500/20 text-stone-900" />
                       </div>
-                      <textarea placeholder="Briefly describe your primary concern (Optional)" value={bookingForm.concern} onChange={e => setBookingForm({...bookingForm, concern: e.target.value})} className="w-full px-5 py-4 bg-stone-50 border border-stone-200 rounded-2xl outline-none h-32 focus:bg-white" />
+                      <textarea placeholder="Briefly describe your primary concern (Optional)" value={bookingForm.concern} onChange={e => setBookingForm({...bookingForm, concern: e.target.value})} className="w-full px-5 py-4 bg-stone-50 border border-stone-200 rounded-2xl outline-none h-32 focus:bg-white text-stone-900" />
                     </div>
                     <button type="submit" disabled={isSubmitting || !selectedTime} className="w-full bg-stone-900 text-white font-bold py-5 rounded-2xl uppercase tracking-widest text-xs hover:bg-teal-900 transition-all disabled:opacity-50 shadow-md">
                       {isSubmitting ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : 'Confirm Consultation Request'}
@@ -557,9 +742,8 @@ export default function App() {
             <h4 className="text-white font-serif font-bold text-2xl mb-1">Lakshmi Mupparthi</h4>
             <p className="text-[10px] font-bold uppercase tracking-widest text-teal-600 mb-8">Registered Psychotherapist (Qualifying)</p>
             <div className="space-y-4 text-xs font-medium">
-              <p className="flex items-center"><MapPin className="w-4 h-4 mr-3 text-teal-700" /> Centre for Interpersonal Relationships (CFIR)</p>
-              <p className="flex items-center"><MapPin className="w-4 h-4 mr-3 text-teal-700" /> Toronto • Ottawa • St. Catharines</p>
-              <p className="flex items-center"><Info className="w-4 h-4 mr-3 text-teal-700" /> Intake via CFIR Administrative Team</p>
+              <p className="flex items-center"><MapPin className="w-4 h-4 mr-3 text-teal-700" /> Serving Toronto, Ottawa & St. Catharines</p>
+              <p className="flex items-center"><Info className="w-4 h-4 mr-3 text-teal-700" /> Clinical Consultation Portal</p>
             </div>
           </div>
           <div className="md:text-right flex flex-col md:items-end justify-between h-full">
@@ -568,7 +752,7 @@ export default function App() {
                <div className="w-10 h-10 rounded-full border border-stone-800 flex items-center justify-center hover:bg-stone-800 transition-colors cursor-pointer text-stone-500 hover:text-white"><Mail className="w-4 h-4" /></div>
             </div>
             <p className="text-[10px] uppercase tracking-widest opacity-40 cursor-pointer hover:opacity-100 transition-opacity" onClick={() => setFooterClickCount(c => c + 1)}>
-              &copy; {new Date().getFullYear()} Clinical Practice Portal. All rights reserved.
+              &copy; {new Date().getFullYear()} Lakshmi Mupparthi.
             </p>
             {footerClickCount >= 3 && (
               <button onClick={() => setShowAdminLogin(true)} className="mt-4 text-[10px] text-teal-500 font-bold underline">Management Access</button>
